@@ -114,7 +114,8 @@ func IsNoResult(err error) bool {
 	}
 	switch e.Status {
 	case "no_results", "no_result", "signature_not_found", "hash_not_found",
-		"taginfo_not_found", "malwareinfo_not_found", "illegal_search_term":
+		"taginfo_not_found", "malwareinfo_not_found", "illegal_search_term",
+		"no_ioc_found", "ok_but_empty":
 		return true
 	}
 	return false
