@@ -1,0 +1,82 @@
+name: release
+
+# Tags only. A registry push is a publication, and publications should be named
+# and deliberate rather than a side effect of merging to main.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # No image job: this server runs over stdio and needs an API key it cannot
+  # carry, so a container would ship a binary that does nothing until someone
+  # passes ABUSECH_AUTH_KEY in. The release binaries are the distribution.
+  binaries:
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.26'
+          # No cache in a publishing workflow. A cache entry poisoned by an
+          # earlier run on a branch would end up baked into a signed release
+          # artefact, and the few seconds saved are not worth that.
+          cache: false
+
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          suffix="${GOOS}-${GOARCH}"
+          # The tag is stamped into the binary, so a released artefact reports
+          # the version it was cut from rather than a number left in the source.
+          ldflags="-s -w -X main.version=${TAG}"
+          go build -trimpath -ldflags="$ldflags" -o "mcp-abusech-${suffix}" ./cmd/mcp-abusech
+          go build -trimpath -ldflags="$ldflags" -o "abusech-tui-${suffix}" ./cmd/abusech-tui
+          shasum -a 256 "mcp-abusech-${suffix}" "abusech-tui-${suffix}" > "checksums-${suffix}.txt"
+
+      - name: publish the artefacts
+        # gh is preinstalled on every runner, so a third-party action here would
+        # add a supply-chain dependency for something the runner already does.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          suffix="${GOOS}-${GOARCH}"
+          # The matrix legs race to create the release; the losers fail
+          # harmlessly and go straight to uploading.
+          gh release create "$TAG" --generate-notes --verify-tag || true
+          gh release upload "$TAG" --clobber \
+            "mcp-abusech-${suffix}" \
+            "abusech-tui-${suffix}" \
+            "checksums-${suffix}.txt"
