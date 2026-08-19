@@ -26,12 +26,12 @@ func New(c *abusech.Client) *Service { return &Service{client: c} }
 
 // SampleResult is a set of malware samples with the context needed to read it.
 type SampleResult struct {
-	Query     string            `json:"query"`
-	Count     int               `json:"count"`
-	Samples   []abusech.Sample  `json:"samples"`
-	Families  []FamilyCount     `json:"families,omitempty" jsonschema:"how many samples each family accounts for; more than one family in a lookup means abuse.ch disagrees with itself or the query was broad"`
-	Note      string            `json:"note,omitempty"`
-	RetrievedAt string          `json:"retrieved_at" jsonschema:"when this answer was fetched. abuse.ch is a live service, so unlike a pinned corpus the same query tomorrow may differ"`
+	Query       string           `json:"query"`
+	Count       int              `json:"count"`
+	Samples     []abusech.Sample `json:"samples"`
+	Families    []FamilyCount    `json:"families,omitempty" jsonschema:"how many samples each family accounts for; more than one family in a lookup means abuse.ch disagrees with itself or the query was broad"`
+	Note        string           `json:"note,omitempty"`
+	RetrievedAt string           `json:"retrieved_at" jsonschema:"when this answer was fetched. abuse.ch is a live service, so unlike a pinned corpus the same query tomorrow may differ"`
 }
 
 // FamilyCount is one family and how many samples carry it.
