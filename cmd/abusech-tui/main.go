@@ -9,13 +9,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sebdraven/mcp-abusech/internal/abusech"
@@ -57,18 +60,26 @@ func main() {
 	printMarks(m, *markFmt)
 }
 
+// authKey finds the abuse.ch auth key.
+//
+// Same rules as the server: the environment variable is the portable answer,
+// the macOS keychain a convenience where it exists.
 func authKey() (string, error) {
 	if k := strings.TrimSpace(os.Getenv("ABUSECH_AUTH_KEY")); k != "" {
 		return k, nil
 	}
-	out, err := exec.Command("security", "find-generic-password",
-		"-s", "mb-api.abuse.ch", "-w").Output()
-	if err == nil {
-		if k := strings.TrimSpace(string(out)); k != "" {
-			return k, nil
+	if runtime.GOOS == "darwin" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "security", "find-generic-password",
+			"-s", "mb-api.abuse.ch", "-w").Output()
+		if err == nil {
+			if k := strings.TrimSpace(string(out)); k != "" {
+				return k, nil
+			}
 		}
 	}
-	return "", fmt.Errorf("no abuse.ch auth key: set ABUSECH_AUTH_KEY, or store one in the keychain under the service name mb-api.abuse.ch")
+	return "", fmt.Errorf("no abuse.ch auth key: set ABUSECH_AUTH_KEY (or, on macOS, store one in the keychain under mb-api.abuse.ch)")
 }
 
 func printMarks(m model, format string) {

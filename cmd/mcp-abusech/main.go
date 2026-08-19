@@ -15,7 +15,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sebdraven/mcp-abusech/internal/abusech"
@@ -81,22 +83,30 @@ func main() {
 
 // authKey finds the abuse.ch auth key.
 //
-// Environment first, then the macOS keychain under the service name that is
-// the API host — the same convention the sibling servers use, so one key entry
-// serves every tool that talks to a given vendor.
+// The environment variable is the only portable answer: it works in a
+// container, on Linux and in any MCP client. The macOS keychain is consulted
+// as a convenience where it exists, so a key does not have to sit in cleartext
+// in a client's configuration file — but nothing depends on it.
 func authKey() (string, error) {
 	if k := strings.TrimSpace(os.Getenv("ABUSECH_AUTH_KEY")); k != "" {
 		return k, nil
 	}
-	out, err := exec.Command("security", "find-generic-password",
-		"-s", "mb-api.abuse.ch", "-w").Output()
-	if err == nil {
-		if k := strings.TrimSpace(string(out)); k != "" {
-			return k, nil
+	if runtime.GOOS == "darwin" {
+		// Short deadline: this is a convenience, and a keychain prompt that
+		// never gets answered would hang a server nobody can see.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "security", "find-generic-password",
+			"-s", "mb-api.abuse.ch", "-w").Output()
+		if err == nil {
+			if k := strings.TrimSpace(string(out)); k != "" {
+				return k, nil
+			}
 		}
 	}
-	return "", fmt.Errorf("no abuse.ch auth key: set ABUSECH_AUTH_KEY, or store one in the keychain under the service name mb-api.abuse.ch.\n" +
-		"Both MalwareBazaar and ThreatFox have required authentication since 2024; get a key at https://auth.abuse.ch/")
+	return "", fmt.Errorf("no abuse.ch auth key: set ABUSECH_AUTH_KEY.\n" +
+		"Both MalwareBazaar and ThreatFox have required authentication since 2024; get a key at https://auth.abuse.ch/\n" +
+		"On macOS the key can instead be stored in the keychain under the service name mb-api.abuse.ch")
 }
 
 func exitWith(v any, err error) {
