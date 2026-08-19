@@ -1,0 +1,106 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege by default; jobs that need more ask for it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet ./...
+
+      # No network in the test job: every test here runs against a local stub
+      # server. Hitting abuse.ch from CI would make the build depend on a third
+      # party's uptime and burn an API quota on every push.
+      - run: go test -race -coverprofile=coverage.out ./...
+
+      - name: coverage summary
+        run: go tool cover -func=coverage.out | tail -n 1 >> "$GITHUB_STEP_SUMMARY"
+
+  staticcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.26'
+          cache: true
+      - uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1.4.1
+        with:
+          version: latest
+          install-go: false
+
+  zizmor:
+    # Static analysis of these very workflows. A CI pipeline is an execution
+    # environment with access to secrets and a package registry, so it deserves
+    # the same scrutiny as the code it builds.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        with:
+          # SARIF upload needs GitHub Advanced Security; without it the job
+          # would fail on the upload rather than on real findings.
+          advanced-security: false
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: build binaries
+        run: |
+          go build -trimpath -o bin/mcp-abusech ./cmd/mcp-abusech
+          go build -trimpath -o bin/abusech-tui ./cmd/abusech-tui
+
+      - name: version reports itself
+        # Cheap smoke test that needs no API key: the binary starts, parses
+        # flags and exits. Anything requiring a key cannot run here.
+        run: ./bin/mcp-abusech -version
+
+  # No publish job and no image: this server is launched over stdio by an MCP
+  # client, and it needs an API key it cannot carry. A container would package
+  # a binary that does nothing until someone passes ABUSECH_AUTH_KEY in, which
+  # is a worse distribution channel than the release binaries.
