@@ -9,6 +9,7 @@
 package abusech
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -213,7 +214,7 @@ func (c *Client) iocs(ctx context.Context, form url.Values, query string) ([]IOC
 		QueryStatus string `json:"query_status"`
 		Data        []IOC  `json:"data"`
 	}
-	if err := c.post(ctx, ThreatFoxEndpoint, form, &out); err != nil {
+	if err := c.postJSON(ctx, ThreatFoxEndpoint, form, &out); err != nil {
 		return nil, err
 	}
 	if out.QueryStatus != "ok" {
@@ -222,13 +223,49 @@ func (c *Client) iocs(ctx context.Context, form url.Values, query string) ([]IOC
 	return out.Data, nil
 }
 
+// postJSON sends a ThreatFox request.
+//
+// The two APIs do NOT share a request format, despite sharing a host, an auth
+// key and a query vocabulary: MalwareBazaar takes form-encoded bodies and
+// ThreatFox takes JSON. Sending the wrong one produces query_status "no_json"
+// with HTTP 200, which reads as a data problem rather than as a request that
+// was never understood.
+func (c *Client) postJSON(ctx context.Context, endpoint string, form url.Values, out any) error {
+	// The callers build url.Values because that is what MalwareBazaar wants;
+	// flattening to a map keeps one call-site shape for both APIs.
+	payload := make(map[string]any, len(form))
+	for k, v := range form {
+		if len(v) == 0 {
+			continue
+		}
+		// Numeric fields have to go over as numbers: ThreatFox rejects a
+		// quoted limit or days value.
+		if k == "limit" || k == "days" {
+			if n, err := strconv.Atoi(v[0]); err == nil {
+				payload[k] = n
+				continue
+			}
+		}
+		payload[k] = v[0]
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encoding request: %w", err)
+	}
+	return c.do(ctx, endpoint, "application/json", bytes.NewReader(body), out)
+}
+
 func (c *Client) post(ctx context.Context, endpoint string, form url.Values, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint,
-		strings.NewReader(form.Encode()))
+	return c.do(ctx, endpoint, "application/x-www-form-urlencoded",
+		strings.NewReader(form.Encode()), out)
+}
+
+func (c *Client) do(ctx context.Context, endpoint, contentType string, body io.Reader, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", contentType)
 	if c.authKey != "" {
 		req.Header.Set("Auth-Key", c.authKey)
 	}
@@ -241,7 +278,7 @@ func (c *Client) post(ctx context.Context, endpoint string, form url.Values, out
 
 	// Capped: a get_recent can return a lot, and an unbounded read on a remote
 	// service is an easy way to lose a process to a bad day upstream.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
 		return fmt.Errorf("reading response: %w", err)
 	}
@@ -253,11 +290,11 @@ func (c *Client) post(ctx context.Context, endpoint string, form url.Values, out
 	case http.StatusTooManyRequests:
 		return fmt.Errorf("abuse.ch rate limit reached (HTTP 429)")
 	default:
-		return fmt.Errorf("abuse.ch returned HTTP %d: %s", resp.StatusCode, snippet(body))
+		return fmt.Errorf("abuse.ch returned HTTP %d: %s", resp.StatusCode, snippet(raw))
 	}
 
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decoding response: %w (body: %s)", err, snippet(body))
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decoding response: %w (body: %s)", err, snippet(raw))
 	}
 	return nil
 }
