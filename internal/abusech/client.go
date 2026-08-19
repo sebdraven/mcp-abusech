@@ -196,9 +196,14 @@ func (c *Client) RecentIOCs(ctx context.Context, days int) ([]IOC, error) {
 }
 
 func (c *Client) samples(ctx context.Context, form url.Values, query string) ([]Sample, error) {
+	// data is decoded in two steps because its TYPE changes with the status:
+	// an array when the query matched, a plain string when it did not ("Your
+	// search did not yield any results"). Decoding straight into a slice fails
+	// on the empty case, and the failure surfaces as a parse error rather than
+	// as the no-result it actually is.
 	var out struct {
-		QueryStatus string   `json:"query_status"`
-		Data        []Sample `json:"data"`
+		QueryStatus string          `json:"query_status"`
+		Data        json.RawMessage `json:"data"`
 	}
 	if err := c.post(ctx, BazaarEndpoint, form, &out); err != nil {
 		return nil, err
@@ -206,13 +211,17 @@ func (c *Client) samples(ctx context.Context, form url.Values, query string) ([]
 	if out.QueryStatus != "ok" {
 		return nil, &APIError{Status: out.QueryStatus, Query: query}
 	}
-	return out.Data, nil
+	var data []Sample
+	if err := json.Unmarshal(out.Data, &data); err != nil {
+		return nil, fmt.Errorf("decoding %s data: %w", query, err)
+	}
+	return data, nil
 }
 
 func (c *Client) iocs(ctx context.Context, form url.Values, query string) ([]IOC, error) {
 	var out struct {
-		QueryStatus string `json:"query_status"`
-		Data        []IOC  `json:"data"`
+		QueryStatus string          `json:"query_status"`
+		Data        json.RawMessage `json:"data"`
 	}
 	if err := c.postJSON(ctx, ThreatFoxEndpoint, form, &out); err != nil {
 		return nil, err
@@ -220,7 +229,11 @@ func (c *Client) iocs(ctx context.Context, form url.Values, query string) ([]IOC
 	if out.QueryStatus != "ok" {
 		return nil, &APIError{Status: out.QueryStatus, Query: query}
 	}
-	return out.Data, nil
+	var data []IOC
+	if err := json.Unmarshal(out.Data, &data); err != nil {
+		return nil, fmt.Errorf("decoding %s data: %w", query, err)
+	}
+	return data, nil
 }
 
 // postJSON sends a ThreatFox request.
