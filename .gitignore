@@ -13,3 +13,7 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+
+# Built binaries. They belong in a release, never in the history: a Go binary
+# is tens of megabytes and cannot be removed from a repository once committed.
+bin/
