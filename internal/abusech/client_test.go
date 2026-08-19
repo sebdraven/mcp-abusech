@@ -3,8 +3,10 @@ package abusech
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -201,6 +203,92 @@ func TestIOCDecodesTheFieldsWeRelyOn(t *testing.T) {
 	}
 	if i.MalpediaURL == "" {
 		t.Error("the Malpedia link is how a ThreatFox family maps to a catalogue entry")
+	}
+}
+
+func TestNoResultDataIsAStringNotAnArray(t *testing.T) {
+	// The shape of `data` changes with the status: an array when the query
+	// matched, a plain string when it did not. Decoding straight into a slice
+	// fails on the empty case, and the failure surfaces as "cannot unmarshal
+	// string into []Sample" — a parse error where the truth is simply "nothing
+	// found". The status has to be read before the data is touched.
+	c, srv := stub(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"query_status":"no_result","data":"Your search did not yield any results"}`))
+	})
+
+	var out struct {
+		QueryStatus string          `json:"query_status"`
+		Data        json.RawMessage `json:"data"`
+	}
+	if err := postTo(t, c, srv, map[string][]string{"query": {"search_ioc"}}, &out); err != nil {
+		t.Fatalf("the transport succeeded; decoding the envelope must not fail: %v", err)
+	}
+	if out.QueryStatus != "no_result" {
+		t.Fatalf("status = %q, want no_result", out.QueryStatus)
+	}
+	if !IsNoResult(&APIError{Status: out.QueryStatus, Query: "search_ioc"}) {
+		t.Error("no_result must classify as a no-result, not as a failure")
+	}
+}
+
+func TestSuccessfulDataStillDecodesAsAnArray(t *testing.T) {
+	// The other half of the same contract: when the status is ok, data really
+	// is an array and must decode into one.
+	c, srv := stub(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"query_status":"ok","data":[{"sha256_hash":"abc","signature":"Example"}]}`))
+	})
+
+	var out struct {
+		QueryStatus string          `json:"query_status"`
+		Data        json.RawMessage `json:"data"`
+	}
+	if err := postTo(t, c, srv, map[string][]string{"query": {"get_siginfo"}}, &out); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	var samples []Sample
+	if err := json.Unmarshal(out.Data, &samples); err != nil {
+		t.Fatalf("a successful payload must decode as an array: %v", err)
+	}
+	if len(samples) != 1 || samples[0].Signature != "Example" {
+		t.Errorf("decoded %+v", samples)
+	}
+}
+
+func TestThreatFoxTakesJSONNotFormEncoding(t *testing.T) {
+	// The two APIs share a host, an auth key and a query vocabulary but NOT a
+	// request format: MalwareBazaar wants form encoding, ThreatFox wants JSON.
+	// Sending the wrong one yields query_status "no_json" with HTTP 200, which
+	// reads as a data problem rather than as a request never understood.
+	var gotContentType string
+	var gotBody []byte
+	c, srv := stub(t, func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"query_status":"ok","data":[]}`))
+	})
+
+	var out struct {
+		QueryStatus string `json:"query_status"`
+	}
+	form := url.Values{"query": {"taginfo"}, "tag": {"Example"}, "limit": {"50"}}
+	if err := c.postJSON(context.Background(), srv.URL, form, &out); err != nil {
+		t.Fatalf("postJSON: %v", err)
+	}
+
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatalf("the body should be JSON: %v (%s)", err, gotBody)
+	}
+	// Numeric fields have to travel as numbers; ThreatFox rejects a quoted
+	// limit, which form encoding would have hidden.
+	if _, ok := payload["limit"].(float64); !ok {
+		t.Errorf("limit should be a JSON number, got %T", payload["limit"])
+	}
+	if payload["tag"] != "Example" {
+		t.Errorf("tag = %v, want the string as given", payload["tag"])
 	}
 }
 
